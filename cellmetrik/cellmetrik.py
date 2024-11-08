@@ -10,6 +10,7 @@
 import os
 import numpy as np
 import pandas as pd
+import networkx as nx
 import matplotlib as mpl
 import shapely.geometry as geo
 import matplotlib.pyplot as plt
@@ -50,7 +51,16 @@ class CellMetrik:
         self.voronoi: Voronoi = None
         self.cell_to_area = defaultdict(float)
         self.cell_to_n_edges = defaultdict(int)
+
+        #This graph stores the gradient between the cells.
+        self.G_grad    = nx.Graph()
+
+        #This graph stores the cell clusters.
+        self.G_connect = nx.Graph()
+
+
         self.cells_with_infinite_area = set()
+
         self.allow_incremental = True
         self.convex_hull = None
 
@@ -75,6 +85,8 @@ class CellMetrik:
     #=====================================
     def extract_convex_hull_from_voronoi_regions(self):
         """
+        We also determine if the area of this region
+        is infinite.
         """
         convex_hull = []
         self.cells_with_infinite_area = set()
@@ -86,7 +98,8 @@ class CellMetrik:
                 # This region has infinite area.
                 point = self.voronoi.points[point_index]
                 convex_hull.append(point)
-                self.cells_with_infinite_area.add(point_index)
+                self.cells_with_infinite_area.add(
+                    point_index)
         
         self.convex_hull = ConvexHull(convex_hull)
         
@@ -99,13 +112,13 @@ class CellMetrik:
         it = zip(self.voronoi.ridge_points,
                  self.voronoi.ridge_vertices)
 
-        for ridge_point, ridge_vertex in it:
+        for ridge_points, ridge_vertices in it:
 
-            v_0, v_1 = ridge_vertex
+            v_0, v_1 = ridge_vertices
 
             if v_0 < 0 or v_1 < 0:
                 # has_infinite_area = True
-                for p in ridge_point:
+                for p in ridge_points:
                     convex_hull.add(p)
             else:
                 continue
@@ -265,11 +278,11 @@ class CellMetrik:
         it = zip(self.voronoi.ridge_points,
                  self.voronoi.ridge_vertices)
 
-        for ridge_point, ridge_vertex in it:
+        for ridge_points, ridge_vertices in it:
 
 
-            p_0, p_1 = ridge_point
-            v_0, v_1 = ridge_vertex
+            p_0, p_1 = ridge_points
+            v_0, v_1 = ridge_vertices
             p_0 = self.voronoi.points[p_0]
             p_1 = self.voronoi.points[p_1]
             midpoint = (p_0 + p_1) / 2
@@ -301,34 +314,13 @@ class CellMetrik:
             
             triangle_area = base * height / 2
 
-            for p in ridge_point:
+            for p in ridge_points:
                 self.cell_to_area[p] += triangle_area
                 self.cell_to_n_edges[p] += 1
                 if has_infinite_area:
                     self.cells_with_infinite_area.add(p)
 
 
-    #=====================================
-    def plot_voronoi_area(self, fname: str):
-        """
-        """
-        fig, ax = plt.subplots()
-        # ax.set_xlim(-30,30)
-        # ax.set_ylim(-30,30)
-        voronoi_plot_2d(self.voronoi,
-                        ax=ax,
-                        show_vertices=False,
-                        show_points=True,
-                        line_colors="orange",
-                        line_width=0.5,
-                        point_size=0.5,
-        )
-        ax.set_xlim(-30,30)
-        ax.set_ylim(-30,30)
-
-        fname = f"voronoi_{fname}.pdf"
-        fname = os.path.join(self.output, fname)
-        fig.savefig(fname, bbox_inches="tight")
     #=====================================
     def compute_convex_hull_from_points(self):
         """
@@ -338,12 +330,14 @@ class CellMetrik:
             incremental=self.allow_incremental)
 
     #=====================================
-    def plot_convex_hull(self, fname: str):
+    def plot_voronoi_with_convex_hull(self, fname: str):
         """
         """
         fig, ax = plt.subplots()
-        ax.set_xlim(-30,30)
-        ax.set_ylim(-30,30)
+
+        # ax.set_xlim(-30,30)
+        # ax.set_ylim(-30,30)
+
         voronoi_plot_2d(self.voronoi,
                         ax=ax,
                         show_vertices=False,
@@ -352,9 +346,11 @@ class CellMetrik:
                         line_width=0.5,
                         point_size=0.5,
         )
+
         ax.set_xlim(-30,30)
         ax.set_ylim(-30,30)
 
+        # Convex hull plot.
         for simplex in self.convex_hull.simplices:
             x = self.points[simplex,0]
             y = self.points[simplex,1]
@@ -366,17 +362,44 @@ class CellMetrik:
         fig.savefig(fname, bbox_inches="tight")
 
     #=====================================
+    def convert_convex_hull_to_shapely(self):
+        """
+        """
+        #Convert convex hull to shapely object.
+        vertices = self.convex_hull.vertices
+        points = self.convex_hull.points[vertices]
+        g_points = geo.MultiPoint(points)
+
+        return g_points.convex_hull
+
+    #=====================================
+    def find_cells_with_infinite_area(
+            self,
+    ):
+        """
+        """
+        for point_index, region_index in enumerate(
+            self.voronoi.point_region):
+            region = self.voronoi.regions[region_index]
+
+            #This region has infinite area.
+            if -1 in region:
+                self.cells_with_infinite_area.add(
+                    point_index)
+                continue
+
+    #=====================================
     def intersect_voronoi_with_convex_hull(
             self,
             use_all_cells: bool = False,
             fname: str = "",
     ):
         """
+        The area of each cell is also computed.
         """
-        vertices = self.convex_hull.vertices
-        points = self.convex_hull.points[vertices]
-        g_points = geo.MultiPoint(points)
-        convex_hull = g_points.convex_hull
+
+        #Convert convex hull to shapely object.
+        convex_hull = self.convert_convex_hull_to_shapely()
 
         if 0 < len(fname):
             fig, ax = plt.subplots()
@@ -385,19 +408,23 @@ class CellMetrik:
             self.voronoi.point_region):
             region = self.voronoi.regions[region_index]
 
+            #This region has infinite area.
             if -1 in region:
                 continue
 
             polygon_np = self.voronoi.vertices[region]
+
             x = polygon_np[:,0]
             y = polygon_np[:,1]
+
             polygon = np.vstack((polygon_np,
                                  polygon_np[0]))
+
             polygon = geo.Polygon(polygon)
 
-            cond=point_index in self.cells_with_infinite_area
+            x = point_index in self.cells_with_infinite_area
 
-            if use_all_cells or cond:
+            if use_all_cells or x:
 
                 polygon = polygon.intersection(
                     convex_hull)
@@ -405,7 +432,11 @@ class CellMetrik:
                 y = polygon.boundary.coords.xy[1][:-1]
                 polygon_np = np.reshape((x,y),(-1,2))
 
-            area = polygon.area
+            # self.G0.add_node(
+            #     point_index,
+            #     area=polygon.area
+            # )
+            self.cell_to_area[point_index] = polygon.area
 
             if 0 < len(fname):
                 ax.fill(x, y, alpha=0.8)
@@ -414,6 +445,80 @@ class CellMetrik:
             fname = f"voronoi_{fname}.pdf"
             fname = os.path.join(self.output, fname)
             fig.savefig(fname, bbox_inches="tight")
+
+    #=====================================
+    def plot_area_histogram(self, fname: str):
+        """
+        """
+        fig, ax = plt.subplots()
+        values = list(self.cell_to_area.values())
+        values = np.array(values)
+        values = np.log10(values)
+        ax.hist(values, color = "b")
+        ax.set_xlabel("log10(Area)")
+
+        fname = f"voronoi_{fname}.pdf"
+        fname = os.path.join(self.output, fname)
+        fig.savefig(fname, bbox_inches="tight")
+
+
+    #=====================================
+    def plot_voronoi_area(self, fname: str):
+        """
+        """
+        fig, ax = plt.subplots()
+
+        for point_index, region_index in enumerate(
+            self.voronoi.point_region):
+            region = self.voronoi.regions[region_index]
+
+            #This region has infinite area.
+            if -1 in region:
+                continue
+
+            polygon_np = self.voronoi.vertices[region]
+
+            x = polygon_np[:,0]
+            y = polygon_np[:,1]
+
+            area = self.cell_to_area[point_index]
+
+            ax.fill(x, y, alpha=0.8)
+
+        fname = f"voronoi_{fname}.pdf"
+        fname = os.path.join(self.output, fname)
+        fig.savefig(fname, bbox_inches="tight")
+
+    #=====================================
+    def compute_gradients(
+            self,
+            fname: str = "",
+    ):
+        """
+        """
+        # for point_index, region_index in enumerate(
+        #     self.voronoi.point_region):
+        #     region = self.voronoi.regions[region_index]
+
+        it = zip(self.voronoi.ridge_points,
+                 self.voronoi.ridge_vertices)
+
+        for ridge_points, ridge_vertices in it:
+
+            if -1 in ridge_vertices:
+                # Cell has infinite area.
+                continue
+
+            # Ridge point indices
+            p_0, p_1 = ridge_points
+            # Ridge vertex indices
+            v_0, v_1 = ridge_vertices
+
+            self.G0.add_ed( point_index, area=polygon.area)
+
+            p_0 = self.voronoi.points[p_0]
+            p_1 = self.voronoi.points[p_1]
+            midpoint = (p_0 + p_1) / 2
 
     #=====================================
 
